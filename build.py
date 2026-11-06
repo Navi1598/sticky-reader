@@ -108,8 +108,14 @@ def fetch_article_text(url: str) -> str:
 
 CLUTTER = re.compile(
     r"^(advertisement|subscribe|sign up|read more|related:|share this|"
-    r"ftc: we use|this article is republished|disclosure statement|"
-    r"you're reading electrek|stay up to date)",
+    r"this article is republished|disclosure statement|stay up to date|"
+    r"get the conversation|sign up for)",
+    re.I,
+)
+# Photo captions / credits that sneak into extracted text
+CREDIT = re.compile(
+    r"(getty images|ap photo|reuters|shutterstock|afp via|via wikimedia|"
+    r"cc by|cc-by|photo by|image credit|/flickr|istock|nasa/jpl)",
     re.I,
 )
 
@@ -120,14 +126,16 @@ def clean_paragraphs(text: str) -> list[str]:
         p = p.strip()
         if len(p) < 2 or CLUTTER.match(p):
             continue
+        if CREDIT.search(p) and len(p) < 140:  # short line with a photo credit = caption
+            continue
         paras.append(p)
     return paras
 
 
 # ---------------------------------------------------------------- pagination
-# Pagination works in "lines" of body text. Defaults match the CSS below
-# (20px Georgia, 1.42 line height, 432px text width) with a small safety margin.
-PARA_GAP = 0.45  # space between paragraphs, in lines
+# Pagination works in "lines" of body text and must match PAGE_CSS below:
+# body text 19px Georgia, 1.36 line height, 440px wide -> about 27 lines, 54 chars/line.
+PARA_GAP = 0.35  # space between paragraphs, in lines
 
 
 def n_lines(text: str, cpl: int) -> int:
@@ -165,31 +173,51 @@ def take_lines(text: str, max_lines: int, cpl: int) -> tuple[str, str]:
     return head, ""
 
 
-def paginate(title: str, paras: list[str], lines_per_page: int, cpl: int) -> list[list[str]]:
-    title_lines = n_lines(title, int(cpl * 0.72)) * 1.15 + 1.6  # big headline + byline
-    pages: list[list[str]] = [[]]
-    left = lines_per_page - title_lines
+def header_lines(title: str, byline: str, cpl: int) -> float:
+    # headline: 25px bold (~0.62x chars per line), 1.18 line height ~= 1.14 body lines
+    # byline: 13px sans (~1.45x chars per line), ~0.68 body lines each
+    return (n_lines(title, int(cpl * 0.62)) * 1.14 + 0.5
+            + n_lines(byline, int(cpl * 1.45)) * 0.68 + 0.6)
+
+
+def paginate(title, byline, paras, lpp, cpl):
+    """Return list of pages; each page = {"paras": [...], "left": lines_left}."""
+    pages = [{"paras": [], "left": lpp - header_lines(title, byline, cpl)}]
     queue = list(paras)
     while queue:
         para = queue.pop(0)
+        page = pages[-1]
         need = n_lines(para, cpl)
-        if need <= left:
-            pages[-1].append(para)
-            left -= need + PARA_GAP
+        if need <= page["left"]:
+            page["paras"].append(para)
+            page["left"] -= need + PARA_GAP
             continue
-        if left >= 3:  # fill the rest of this page, carry the remainder over
-            head, tail = take_lines(para, int(left), cpl)
+        if page["left"] >= 2:  # fill the rest of this page, carry the remainder over
+            head, tail = take_lines(para, int(page["left"]), cpl)
             if head:
-                pages[-1].append(head)
+                page["paras"].append(head)
+                page["left"] = 0
                 para = tail
-        pages.append([])
-        left = lines_per_page
+        pages.append({"paras": [], "left": lpp})
         if para:
             queue.insert(0, para)
-    pages = [p for p in pages if p]
-    # The last page also carries a ~3-line credit note; make room for it.
-    if pages and left < 3.5 and len(pages[-1]) > 1:
-        pages.append([pages[-1].pop()])
+    pages = [p for p in pages if p["paras"]]
+    # The last page also carries a ~2-line "end of article" note.
+    if pages and pages[-1]["left"] < 2.2 and len(pages[-1]["paras"]) > 1:
+        moved = pages[-1]["paras"].pop()
+        pages.append({"paras": [moved], "left": lpp - n_lines(moved, cpl)})
+    return pages
+
+
+def truncate(pages, n, lpp, cpl):
+    """Keep the first n pages and make room for the 'continues online' note."""
+    pages = pages[:n]
+    last = pages[-1]
+    if last["left"] < 2.2 and len(last["paras"]) > 1:
+        last["paras"].pop()
+    elif last["left"] < 2.2:
+        head, _ = take_lines(last["paras"][0], max(1, lpp - 3), cpl)
+        last["paras"][0] = head + " …"
     return pages
 
 
@@ -223,13 +251,17 @@ def candidates_for(topic: dict, max_age_days: int, shown: set[str]) -> list[dict
     return out
 
 
-def pick_article(topic: dict, cfg: dict, shown: set[str]) -> dict | None:
-    lpp = cfg.get("lines_per_page", 23)
-    cpl = cfg.get("chars_per_line", 47)
-    max_pages = cfg["pages_per_topic"]
-    cands = candidates_for(topic, cfg.get("max_age_days", 4), shown)
-    fallback = None
-    for c in cands[:8]:  # look at the 8 newest at most
+def short_source(source: str) -> str:
+    # "Science + Tech – The Conversation" -> "The Conversation"
+    parts = re.split(r"\s+[–—-]\s+", source)
+    return parts[-1].strip() if parts else source
+
+
+def build_articles(topic, cfg, shown):
+    """Paginate up to 8 of the newest unseen articles for a topic."""
+    lpp, cpl = cfg["lines_per_page"], cfg["chars_per_line"]
+    arts = []
+    for c in candidates_for(topic, cfg.get("max_age_days", 4), shown)[:8]:
         e = c["entry"]
         text = entry_feed_content(e)
         if len(text) < 1200:  # feed only has a teaser -> fetch the page
@@ -238,72 +270,79 @@ def pick_article(topic: dict, cfg: dict, shown: set[str]) -> dict | None:
         if sum(len(p) for p in paras) < 600:  # too thin to be worth reading
             continue
         title = strip_tags(e.get("title", "Untitled"))
-        pages = paginate(title, paras, lpp, cpl)
-        art = {
-            "title": title,
-            "author": strip_tags(e.get("author", "") or ""),
-            "link": c["link"],
-            "source": c["source"],
-            "date": dt.datetime.utcfromtimestamp(c["ts"]).strftime("%b %d") if c["ts"] else "",
-            "pages": pages,
-        }
-        if len(pages) <= max_pages:
-            return art  # newest article that fits completely
-        if fallback is None:
-            fallback = art
-    return fallback  # nothing fits: newest one, truncated
+        author = strip_tags(e.get("author", "") or "")
+        date = dt.datetime.utcfromtimestamp(c["ts"]).strftime("%b %d") if c["ts"] else ""
+        byline = " · ".join(x for x in (author, short_source(c["source"]), date) if x)
+        arts.append({
+            "topic": topic["name"], "title": title, "byline": byline, "link": c["link"],
+            "source": short_source(c["source"]), "pages": paginate(title, byline, paras, lpp, cpl),
+        })
+    return arts
+
+
+def plan(topics, cfg, shown):
+    """Share `total_pages` between topics. Each topic gets a fair share; an
+    article that's shorter than its share gives the spare pages to later topics."""
+    total = cfg["total_pages"]
+    lpp, cpl = cfg["lines_per_page"], cfg["chars_per_line"]
+    chosen, remaining = [], total
+    pools = []
+    for t in topics:
+        print(f"* {t['name']}")
+        pools.append(build_articles(t, cfg, shown))
+    used_links = set()
+    for i, arts in enumerate(pools):
+        topics_left = len(topics) - i
+        arts = [a for a in arts if a["link"] not in used_links]  # no repeats across topics
+        if not arts or remaining <= 0:
+            print(f"    -> nothing new for {topics[i]['name']}" if not arts else "    -> no pages left")
+            continue
+        # guarantee each later topic with an article at least 2 pages
+        later = sum(1 for p in pools[i + 1:] if any(a["link"] not in used_links for a in p))
+        budget = max(1, remaining - 2 * later) if later else remaining
+        fair = max(2, remaining // topics_left)
+        fits = [a for a in arts if len(a["pages"]) <= budget]
+        if fits:
+            # newest article that fits in the fair share; else newest that fits at all
+            near = [a for a in fits if len(a["pages"]) <= fair]
+            art = near[0] if near else min(fits, key=lambda a: len(a["pages"]))
+            art["truncated"] = False
+        else:
+            art = min(arts, key=lambda a: len(a["pages"]))  # shortest, cut to budget
+            art["pages"] = truncate(art["pages"], budget, lpp, cpl)
+            art["truncated"] = True
+        remaining -= len(art["pages"])
+        used_links.add(art["link"])
+        chosen.append(art)
+        print(f"    -> {art['title']} ({len(art['pages'])} pages"
+              f"{', truncated' if art['truncated'] else ''})")
+    return chosen
 
 
 # ---------------------------------------------------------------- rendering
 PAGE_CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{width:480px;height:800px;overflow:hidden;background:#fff;color:#000}
-body{font-family:Georgia,'Times New Roman',serif;padding:22px 24px 0 24px;position:relative}
-.top{font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;
+body{font-family:Georgia,'Times New Roman',serif;padding:18px 20px 0 20px;position:relative}
+.top{font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;
      text-transform:uppercase;letter-spacing:1px;border-bottom:2px solid #000;
-     padding-bottom:6px;margin-bottom:14px;display:flex;justify-content:space-between}
-h1{font-size:27px;line-height:1.2;margin-bottom:8px}
-.by{font-family:Arial,Helvetica,sans-serif;font-size:14px;margin-bottom:14px}
-p{font-size:20px;line-height:1.42;margin-bottom:12px;text-align:left;hyphens:auto}
-.end{font-family:Arial,Helvetica,sans-serif;font-size:15px;border-top:1px solid #000;
-     padding-top:8px;margin-top:6px}
-.foot{position:absolute;left:24px;right:24px;bottom:14px;font-family:Arial,Helvetica,sans-serif;
-      font-size:14px;display:flex;justify-content:space-between;border-top:1px solid #000;padding-top:6px}
+     padding-bottom:5px;margin-bottom:12px;display:flex;justify-content:space-between}
+h1{font-size:25px;line-height:1.18;margin-bottom:7px}
+.by{font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.35;margin-bottom:10px}
+p{font-size:19px;line-height:1.36;margin-bottom:9px;text-align:left;hyphens:auto}
+h2{font-family:Arial,Helvetica,sans-serif;font-size:18px;line-height:1.36;margin:2px 0 7px 0}
+.end{font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.3;
+     border-top:1px solid #000;padding-top:5px;margin-top:4px}
+.foot{position:absolute;left:20px;right:20px;bottom:10px;font-family:Arial,Helvetica,sans-serif;
+      font-size:13px;display:flex;justify-content:space-between;border-top:1px solid #000;padding-top:5px}
 .empty{display:flex;flex-direction:column;justify-content:center;height:640px;text-align:center}
-.empty h1{font-size:30px}
-.empty p{font-size:19px}
+.empty h1{font-size:28px}
+.empty p{font-size:18px}
 """
 
 
-def render_page(topic_name, art, page_idx, n_pages, global_no, total, built, truncated):
+def page_html(top_left, top_right, body, global_no, total, built):
     esc = html.escape
-    body = []
-    if art is None:
-        body.append(
-            f'<div class="empty"><h1>No new {esc(topic_name)} article</h1>'
-            "<p>Nothing new today. Press down to continue.</p></div>"
-        )
-    elif page_idx >= n_pages:
-        body.append(
-            f'<div class="empty"><h1>End of article</h1>'
-            f"<p>Press down for the next topic.</p></div>"
-        )
-    else:
-        if page_idx == 0:
-            body.append(f"<h1>{esc(art['title'])}</h1>")
-            meta = " · ".join(x for x in (art.get("author"), art["source"], art["date"]) if x)
-            body.append(f'<div class="by">{esc(meta)}</div>')
-        for para in art["pages"][page_idx]:
-            body.append(f"<p>{esc(para)}</p>")
-        if page_idx == n_pages - 1:
-            note = "Continues online at the original link." if truncated else "End of article."
-            body.append(
-                f'<div class="end">{note} Republished from {esc(art["source"])}: '
-                f'{esc(art["link"])}</div>'
-            )
-
-    shown_pages = max(n_pages, 1) if art else 1
-    page_label = f"{min(page_idx + 1, shown_pages)}/{shown_pages}" if art and page_idx < n_pages else ""
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=480,height=800,initial-scale=1">
@@ -312,11 +351,29 @@ def render_page(topic_name, art, page_idx, n_pages, global_no, total, built, tru
 <title>Sticky Reader {global_no:02d}</title>
 <style>{PAGE_CSS}</style></head>
 <body>
-<div class="top"><span>{esc(topic_name)}</span><span>{page_label}</span></div>
-{''.join(body)}
+<div class="top"><span>{esc(top_left)}</span><span>{esc(top_right)}</span></div>
+{body}
 <div class="foot"><span>{esc(built)}</span><span>{global_no}/{total}</span></div>
 </body></html>
 """
+
+
+def article_page_body(art, i):
+    esc = html.escape
+    out = []
+    if i == 0:
+        out.append(f"<h1>{esc(art['title'])}</h1>")
+        out.append(f'<div class="by">{esc(art["byline"])}</div>')
+    for p in art["pages"][i]["paras"]:
+        is_head = len(p) < 70 and not re.search(r"[.!?:;,\u201d\"\u2026)]$", p)
+        out.append(f"<h2>{esc(p)}</h2>" if is_head else f"<p>{esc(p)}</p>")
+    if i == len(art["pages"]) - 1:
+        m = re.search(r"(\d{4,})/?$", art["link"])
+        ident = m.group(1) if m else art["link"].rstrip("/").split("/")[-1][-20:]
+        what = "Continues online" if art["truncated"] else "End of article"
+        out.append(f'<div class="end">{what} · republished from {esc(art["source"])} '
+                   f'(CC BY-ND) · ref {esc(ident)}</div>')
+    return "".join(out)
 
 
 def render_index(pages_meta, built):
@@ -324,11 +381,11 @@ def render_index(pages_meta, built):
         f'<li><a href="{m["file"]}">{m["file"]}</a> - {html.escape(m["label"])}</li>' for m in pages_meta
     )
     frames = "".join(
-        f'<iframe src="{m["file"]}" width="480" height="800" '
-        f'style="border:1px solid #999;margin:6px;transform-origin:0 0"></iframe>'
+        f'<iframe src="{m["file"]}" width="480" height="800" style="border:1px solid #999;margin:6px"></iframe>'
         for m in pages_meta
     )
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Sticky Reader</title></head>
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="robots" content="noindex">
+<title>Sticky Reader</title></head>
 <body style="font-family:Arial;padding:16px">
 <h2>Sticky Reader - built {html.escape(built)}</h2>
 <ol>{rows}</ol>
@@ -339,49 +396,52 @@ def render_index(pages_meta, built):
 # ---------------------------------------------------------------- main
 def main() -> int:
     cfg = load_config()
+    cfg.setdefault("lines_per_page", 26)
+    cfg.setdefault("chars_per_line", 53)
+    cfg.setdefault("total_pages", cfg.get("pages_per_topic", 4) * len(cfg["topics"]))
     state = load_state()
     shown = set(state.get("shown", []))
-    per_topic = cfg["pages_per_topic"]
-    topics = cfg["topics"]
-    total = per_topic * len(topics)
+    total = cfg["total_pages"]
     built = dt.datetime.now(dt.timezone.utc).astimezone().strftime("%a %b %d")
 
     DOCS.mkdir(exist_ok=True)
     (DOCS / ".nojekyll").write_text("")
+
+    articles = plan(cfg["topics"], cfg, shown)
     pages_meta, n = [], 0
-
-    for topic in topics:
-        print(f"* {topic['name']}")
-        art = pick_article(topic, cfg, shown)
-        if art:
-            print(f"    -> {art['title']} ({len(art['pages'])} pages)")
-            shown.add(art["link"])
-            state["shown"].append(art["link"])
-        else:
-            print("    -> nothing new")
-        truncated = bool(art) and len(art["pages"]) > per_topic
-        n_pages = min(len(art["pages"]), per_topic) if art else 0
-        for i in range(per_topic):
+    for art_no, art in enumerate(articles, 1):
+        shown.add(art["link"])
+        state["shown"].append(art["link"])
+        for i in range(len(art["pages"])):
             n += 1
-            fname = f"p{n:02d}.html"
-            (DOCS / fname).write_text(
-                render_page(topic["name"], art, i, n_pages, n, total, built, truncated),
-                encoding="utf-8",
-            )
-            label = f"{topic['name']} page {i + 1}"
-            if art and i == 0:
-                label += f": {art['title']}"
-            pages_meta.append({"file": fname, "label": label})
+            right = f"{i + 1}/{len(art['pages'])}"
+            body = article_page_body(art, i)
+            (DOCS / f"p{n:02d}.html").write_text(
+                page_html(art["topic"], right, body, n, total, built), encoding="utf-8")
+            label = f"{art['topic']} {right}" + (f": {art['title']}" if i == 0 else "")
+            pages_meta.append({"file": f"p{n:02d}.html", "label": label})
 
-    # remove stale pages if you reduced topics/pages in config
-    for old in DOCS.glob("p*.html"):
+    # Fill the rest of the pool with "done" pages so old content never lingers.
+    first_blank = n + 1
+    while n < total:
+        n += 1
+        msg = ("<div class=\"empty\"><h1>That's all for today</h1>"
+               "<p>New articles arrive tomorrow morning.</p></div>")
+        if n == first_blank and not articles:
+            msg = ("<div class=\"empty\"><h1>No new articles today</h1>"
+                   "<p>Check back tomorrow.</p></div>")
+        (DOCS / f"p{n:02d}.html").write_text(
+            page_html("Sticky Reader", "", msg, n, total, built), encoding="utf-8")
+        pages_meta.append({"file": f"p{n:02d}.html", "label": "(empty)"})
+
+    for old in DOCS.glob("p*.html"):  # remove pages beyond the pool size
         m = re.fullmatch(r"p(\d+)\.html", old.name)
         if m and int(m.group(1)) > total:
             old.unlink()
 
     (DOCS / "index.html").write_text(render_index(pages_meta, built), encoding="utf-8")
     save_state(state)
-    print(f"Wrote {total} pages to {DOCS}")
+    print(f"Wrote {total} pages ({first_blank - 1} with articles) to {DOCS}")
     return 0
 
 
