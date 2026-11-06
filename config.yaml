@@ -8,10 +8,14 @@
 
 total_pages: 28
 
-# Page fit. Lower lines_per_page if text gets cut off at the bottom of a page;
-# raise it if pages have empty space at the bottom.
-lines_per_page: 26
-chars_per_line: 53
+# Text size on the Sticky, in pixels (19 = smaller, 21 = default, 23 = large).
+# Bigger text means more pages per article, so raise total_pages to match.
+font_size: 21
+
+# Page fit is worked out from font_size automatically. Only if text gets cut off
+# at the bottom of pages (or leaves big gaps), uncomment and adjust:
+# lines_per_page: 23
+# chars_per_line: 48
 
 # Only consider articles published within this many days.
 max_age_days: 4
