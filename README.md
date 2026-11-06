@@ -1,18 +1,19 @@
 # Sticky Reader
 
-Every morning, this project picks one short article per topic, splits it into
+Every morning, this project picks one article per topic, splits it into
 pages sized for the Seeed reTerminal Sticky (480x800 portrait), and publishes
 them as web pages. Each SenseCraft design shows one page, and you read by pressing
 the **down** button on the Sticky.
 
-Default: 4 topics x 4 pages = **16 designs**, published as `p01.html` ... `p16.html`.
+All articles share **one pool of pages** (default **28**, `p01.html` ... `p28.html`).
+Articles are placed one after another with no blank gaps: if today's technology
+article needs 5 pages it takes p01–p05, and politics starts on p06. The top of
+each page shows the topic and "page 2/6" for that article. Pages left over at the
+end say "That's all for today". Only if the day's articles don't all fit is the
+last one cut short.
 
-| Pages | Topic |
-|---|---|
-| p01–p04 | Technology |
-| p05–p08 | Politics |
-| p09–p12 | Nature & Environment |
-| p13–p16 | Batteries (EV & Drones) |
+A typical article from The Conversation (800–1,300 words) takes 5–7 pages, so
+4 topics usually need 22–28 pages.
 
 ---
 
@@ -43,20 +44,25 @@ After that, it runs automatically every day around 5:41 AM Eastern.
 
 ## Part 2 – Set up the designs in SenseCraft (one time, about 20 min)
 
-Do this for each page, p01 through p16:
+Do this for each page, p01 through p28 (or up to your `total_pages`):
 
 1. In SenseCraft HMI go to **Workspace → Design** and create a new design.
-   Name it with its number so they sort in order: `01 Tech 1`, `02 Tech 2`, ... `16 Battery 4`.
+   Name it with its number so they sort in order: `01`, `02`, ... `28`.
+   (Topics move around from day to day, so name designs by number, not topic.)
 2. Add the **HTML/Web element** that takes a URL and stretch it to cover the
    **whole canvas** (480x800).
 3. Set its URL to `https://YOUR-USERNAME.github.io/sticky-reader/p01.html`
    (`p02.html` for the next design, and so on).
 4. Save.
 
-**Tip:** build **p01 first**, check it on the Sticky, then duplicate it 15 times and
+**Tip:** build **p01 first**, check it on the Sticky, then duplicate it and
 change only the name and the URL number.
 
 On the Sticky, open **Designs**, tap **01**, then press **down** to read through all of them.
+
+**Already have 16 designs from the first version?** Keep them as they are (they
+still point at p01–p16) and add 12 more for p17–p28. Rename the old ones `01`–`16`
+if they have topic names.
 
 ---
 
@@ -66,8 +72,9 @@ Everything is in `config.yaml`. Edit it on GitHub (pencil icon) and commit:
 
 - **Text cut off at the bottom of a page?** Lower `lines_per_page` (e.g. 23 → 21).
 - **Too much empty space at the bottom?** Raise `lines_per_page` by 1.
-- **Articles often show "Continued online"?** Raise `pages_per_topic` to 5 and
-  add 4 more designs (the page numbers shift, so check the list on the index page).
+- **Last article often cut short ("Continues online")?** Raise `total_pages`
+  (e.g. 28 → 32) and add matching designs (p29–p32).
+- **Fewer designs?** Lower `total_pages`. It must match the number of designs you have.
 - **Different topics or sources?** Edit the `topics` list. Any RSS/Atom feed works;
   `keywords` limits a topic to matching articles.
 
