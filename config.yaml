@@ -6,16 +6,22 @@
 # Short articles leave room for longer ones; only if the day's articles
 # don't fit at all is the last one cut short. Unused pages say "That's all for today".
 
-total_pages: 28
+total_pages: 36
 
-# Text size on the Sticky, in pixels (19 = smaller, 21 = default, 23 = large).
+# Text size on the Sticky, in pixels (21 = medium, 24 = large, 27 = extra large).
 # Bigger text means more pages per article, so raise total_pages to match.
-font_size: 21
+font_size: 24
+
+# true = white text on a black background; false = black text on white.
+dark_mode: true
+
+# Colors: light = black text on white, dark = white text on black.
+theme: dark
 
 # Page fit is worked out from font_size automatically. Only if text gets cut off
 # at the bottom of pages (or leaves big gaps), uncomment and adjust:
-# lines_per_page: 23
-# chars_per_line: 48
+# lines_per_page: 21
+# chars_per_line: 42
 
 # Only consider articles published within this many days.
 max_age_days: 4
