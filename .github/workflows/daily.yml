@@ -2,7 +2,7 @@ name: Build daily Sticky pages
 
 on:
   schedule:
-    # 10:41 UTC = 5:41 AM Eastern (winter) / 6:41 AM (summer)
+    # 10:45 UTC = 5:45 AM Eastern (winter) / 6:45 AM (summer)
     - cron: "41 10 * * *"
   workflow_dispatch: {}   # adds a "Run workflow" button for manual runs
 
