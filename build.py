@@ -134,7 +134,7 @@ def clean_paragraphs(text: str) -> list[str]:
 
 # ---------------------------------------------------------------- pagination
 # Pagination works in "lines" of body text and must match PAGE_CSS below:
-# body text 19px Georgia, 1.36 line height, 440px wide -> about 27 lines, 54 chars/line.
+# lines_per_page / chars_per_line are derived from font_size in main().
 PARA_GAP = 0.35  # space between paragraphs, in lines
 
 
@@ -320,25 +320,32 @@ def plan(topics, cfg, shown):
 
 
 # ---------------------------------------------------------------- rendering
-PAGE_CSS = """
-*{box-sizing:border-box;margin:0;padding:0}
-html,body{width:480px;height:800px;overflow:hidden;background:#fff;color:#000}
-body{font-family:Georgia,'Times New Roman',serif;padding:18px 20px 0 20px;position:relative}
-.top{font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;
+def page_css(fs: int) -> str:
+    """CSS for a 480x800 page; fs = body text size in px (default 21)."""
+    small = max(13, fs - 6)
+    return f"""
+*{{box-sizing:border-box;margin:0;padding:0}}
+html,body{{width:480px;height:800px;overflow:hidden;background:#fff;color:#000}}
+body{{font-family:Georgia,'Times New Roman',serif;padding:18px 20px 0 20px;position:relative}}
+.top{{font-family:Arial,Helvetica,sans-serif;font-size:{small + 1}px;font-weight:bold;
      text-transform:uppercase;letter-spacing:1px;border-bottom:2px solid #000;
-     padding-bottom:5px;margin-bottom:12px;display:flex;justify-content:space-between}
-h1{font-size:25px;line-height:1.18;margin-bottom:7px}
-.by{font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.35;margin-bottom:10px}
-p{font-size:19px;line-height:1.36;margin-bottom:9px;text-align:left;hyphens:auto}
-h2{font-family:Arial,Helvetica,sans-serif;font-size:18px;line-height:1.36;margin:2px 0 7px 0}
-.end{font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.3;
-     border-top:1px solid #000;padding-top:5px;margin-top:4px}
-.foot{position:absolute;left:20px;right:20px;bottom:10px;font-family:Arial,Helvetica,sans-serif;
-      font-size:13px;display:flex;justify-content:space-between;border-top:1px solid #000;padding-top:5px}
-.empty{display:flex;flex-direction:column;justify-content:center;height:640px;text-align:center}
-.empty h1{font-size:28px}
-.empty p{font-size:18px}
+     padding-bottom:5px;margin-bottom:12px;display:flex;justify-content:space-between}}
+h1{{font-size:{fs + 6}px;line-height:1.18;margin-bottom:7px}}
+.by{{font-family:Arial,Helvetica,sans-serif;font-size:{small}px;line-height:1.35;margin-bottom:10px}}
+p{{font-size:{fs}px;line-height:1.36;margin-bottom:9px;text-align:left;hyphens:auto}}
+h2{{font-family:Arial,Helvetica,sans-serif;font-size:{fs - 1}px;line-height:1.36;margin:2px 0 7px 0}}
+.end{{font-family:Arial,Helvetica,sans-serif;font-size:{small}px;line-height:1.3;
+     border-top:1px solid #000;padding-top:5px;margin-top:4px}}
+.foot{{position:absolute;left:20px;right:20px;bottom:10px;font-family:Arial,Helvetica,sans-serif;
+      font-size:{small}px;display:flex;justify-content:space-between;border-top:1px solid #000;padding-top:5px}}
+.empty{{display:flex;flex-direction:column;justify-content:center;height:640px;text-align:center}}
+.empty h1{{font-size:{fs + 9}px}}
+.empty p{{font-size:{fs}px}}
 """
+
+
+FONT_SIZE = 21  # set from config in main()
+
 
 
 def page_html(top_left, top_right, body, global_no, total, built):
@@ -349,7 +356,7 @@ def page_html(top_left, top_right, body, global_no, total, built):
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta name="robots" content="noindex,nofollow">
 <title>Sticky Reader {global_no:02d}</title>
-<style>{PAGE_CSS}</style></head>
+<style>{page_css(FONT_SIZE)}</style></head>
 <body>
 <div class="top"><span>{esc(top_left)}</span><span>{esc(top_right)}</span></div>
 {body}
@@ -396,8 +403,12 @@ def render_index(pages_meta, built):
 # ---------------------------------------------------------------- main
 def main() -> int:
     cfg = load_config()
-    cfg.setdefault("lines_per_page", 26)
-    cfg.setdefault("chars_per_line", 53)
+    global FONT_SIZE
+    FONT_SIZE = int(cfg.get("font_size", 21))
+    # Fit estimates scale with the font: ~700px of body height, 1.36 line height,
+    # and ~53 chars per line at 19px (measured). Override in config if needed.
+    cfg.setdefault("lines_per_page", int(700 / (FONT_SIZE * 1.36)) - 1)
+    cfg.setdefault("chars_per_line", round(53 * 19 / FONT_SIZE))
     cfg.setdefault("total_pages", cfg.get("pages_per_topic", 4) * len(cfg["topics"]))
     state = load_state()
     shown = set(state.get("shown", []))
