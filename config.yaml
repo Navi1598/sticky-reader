@@ -10,7 +10,7 @@ total_pages: 36
 
 # Text size on the Sticky, in pixels (21 = medium, 24 = large, 27 = extra large).
 # Bigger text means more pages per article, so raise total_pages to match.
-font_size: 24
+font_size: 27
 
 # true = white text on a black background; false = black text on white.
 dark_mode: true
