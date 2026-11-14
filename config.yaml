@@ -8,20 +8,17 @@
 
 total_pages: 36
 
-# Text size on the Sticky, in pixels (21 = medium, 24 = large, 27 = extra large).
+# Text size on the Sticky, in pixels (24 = large, 27 = extra large, 30 = huge).
 # Bigger text means more pages per article, so raise total_pages to match.
 font_size: 27
 
 # true = white text on a black background; false = black text on white.
 dark_mode: true
 
-# Colors: light = black text on white, dark = white text on black.
-theme: dark
-
 # Page fit is worked out from font_size automatically. Only if text gets cut off
 # at the bottom of pages (or leaves big gaps), uncomment and adjust:
-# lines_per_page: 21
-# chars_per_line: 42
+# lines_per_page: 18
+# chars_per_line: 37
 
 # Only consider articles published within this many days.
 max_age_days: 4
