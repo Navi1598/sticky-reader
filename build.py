@@ -62,11 +62,22 @@ def save_state(state: dict) -> None:
 
 def strip_tags(text: str) -> str:
     text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=re.S | re.I)
+    # photos + captions ("... AP Photo/Name") are useless on e-ink
+    text = re.sub(r"<figure[^>]*>.*?</figure>", "\n", text, flags=re.S | re.I)
+    text = re.sub(r"<figcaption[^>]*>.*?</figcaption>", "\n", text, flags=re.S | re.I)
+    # inline tags (links, bold) vanish without leaving a gap; block tags break lines
+    text = re.sub(r"</?(a|b|strong|i|em|span|sup|sub|abbr|cite|q|u|small|mark)\b[^>]*>", "", text, flags=re.I)
     text = re.sub(r"<br\s*/?>|</p>|</h\d>|</li>", "\n", text, flags=re.I)
     text = re.sub(r"<[^>]+>", " ", text)
     text = html.unescape(text)
-    lines = [re.sub(r"[ \t ]+", " ", ln).strip() for ln in text.split("\n")]
-    return "\n".join(ln for ln in lines if ln)
+    lines = []
+    for ln in text.split("\n"):
+        ln = re.sub(r"[ \t\u00a0]+", " ", ln).strip()
+        ln = re.sub(r"\s+([,.;:!?)\]\u201d\u2019])", r"\1", ln)  # "decline , email" -> "decline, email"
+        ln = re.sub(r"([(\[\u201c\u2018])\s+", r"\1", ln)        # "\u201c Today" -> "\u201cToday"
+        if ln:
+            lines.append(ln)
+    return "\n".join(lines)
 
 
 def entry_time(entry) -> float:
@@ -112,6 +123,13 @@ CLUTTER = re.compile(
     r"get the conversation|sign up for)",
     re.I,
 )
+# Author disclosure statements at the end of The Conversation articles
+DISCLOSURE = re.compile(
+    r"(does not work for, consult, own shares in|receives? funding from|has received funding|"
+    r"has no relevant affiliations|declares? no |is a member of .* and has|"
+    r"have disclosed no relevant affiliations|disclosed no relevant affiliations)",
+    re.I,
+)
 # Photo captions / credits that sneak into extracted text
 CREDIT = re.compile(
     r"(getty images|ap photo|reuters|shutterstock|afp via|via wikimedia|"
@@ -127,6 +145,8 @@ def clean_paragraphs(text: str) -> list[str]:
         if len(p) < 2 or CLUTTER.match(p):
             continue
         if CREDIT.search(p) and len(p) < 140:  # short line with a photo credit = caption
+            continue
+        if DISCLOSURE.search(p):
             continue
         paras.append(p)
     return paras
@@ -333,8 +353,9 @@ body{{font-family:Georgia,'Times New Roman',serif;padding:18px 20px 0 20px;posit
      padding-bottom:5px;margin-bottom:12px;display:flex;justify-content:space-between}}
 h1{{font-size:{fs + 6}px;line-height:1.18;margin-bottom:7px}}
 .by{{font-family:Arial,Helvetica,sans-serif;font-size:{small}px;line-height:1.35;margin-bottom:10px}}
-p{{font-size:{fs}px;line-height:1.36;margin-bottom:9px;text-align:left;hyphens:auto}}
-h2{{font-family:Arial,Helvetica,sans-serif;font-size:{fs - 1}px;line-height:1.36;margin:2px 0 7px 0}}
+p{{font-size:{fs}px;line-height:1.36;margin-bottom:9px;text-align:left;hyphens:auto;orphans:1;widows:1}}
+h2{{font-family:Arial,Helvetica,sans-serif;font-size:{fs - 1}px;line-height:1.36;margin:2px 0 7px 0;break-after:avoid}}
+h1,.by{{break-inside:avoid}}
 .end{{font-family:Arial,Helvetica,sans-serif;font-size:{small}px;line-height:1.3;
      border-top:1px solid {fg};padding-top:5px;margin-top:4px}}
 .foot{{position:absolute;left:20px;right:20px;bottom:10px;font-family:Arial,Helvetica,sans-serif;
@@ -345,14 +366,14 @@ h2{{font-family:Arial,Helvetica,sans-serif;font-size:{fs - 1}px;line-height:1.36
 """
 
 
-FONT_SIZE = 24  # set from config in main()
-DARK = True  # set from config in main()
-DARK = False   # set from config in main()
+FONT_SIZE = 27  # set from config in main()
+DARK = False    # set from config in main()
 
 
 
-def page_html(top_left, top_right, body, global_no, total, built):
+def page_html(top_left, top_right, body, global_no, total, built, data_json=""):
     esc = html.escape
+    script = FIT_JS.replace("__DATA__", data_json).replace("__N__", str(global_no)) if data_json else ""
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=480,height=800,initial-scale=1">
@@ -361,11 +382,83 @@ def page_html(top_left, top_right, body, global_no, total, built):
 <title>Sticky Reader {global_no:02d}</title>
 <style>{page_css(FONT_SIZE, DARK)}</style></head>
 <body>
-<div class="top"><span>{esc(top_left)}</span><span>{esc(top_right)}</span></div>
-{body}
+<div class="top"><span id="tl">{esc(top_left)}</span><span id="tr">{esc(top_right)}</span></div>
+<div id="static">{body}</div>
 <div class="foot"><span>{esc(built)}</span><span>{global_no}/{total}</span></div>
+{script}
 </body></html>
 """
+
+
+# Lays the day's articles out with the device's real fonts and shows page N.
+# Uses CSS columns: each article flows into 440px-wide columns of exactly the
+# available height; page k of an article = column k. If scripts don't run,
+# the server-side layout in #static stays visible instead.
+FIT_JS = r"""<script>
+(function () {
+  try {
+    var D = __DATA__, N = __N__, W = 440, GAP = 40;
+    var top = document.querySelector('.top'), foot = document.querySelector('.foot');
+    var y0 = top.offsetTop + top.offsetHeight + 12;
+    var H = Math.floor(foot.offsetTop - 6 - y0);
+    function esc(t) { var d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+    function make(a) {
+      var vp = document.createElement('div');
+      vp.style.cssText = 'position:absolute;left:20px;top:' + y0 + 'px;width:' + W + 'px;height:' + H + 'px;overflow:hidden;visibility:hidden';
+      var f = document.createElement('div');
+      f.style.cssText = 'position:relative;left:0;width:' + W + 'px;height:' + H + 'px;column-width:' + W + 'px;column-gap:' + GAP + 'px;column-fill:auto';
+      var h = '<h1>' + esc(a.title) + '</h1><div class="by">' + esc(a.byline) + '</div>';
+      for (var i = 0; i < a.paras.length; i++) {
+        h += a.paras[i][0] ? '<h2>' + esc(a.paras[i][1]) + '</h2>' : '<p>' + esc(a.paras[i][1]) + '</p>';
+      }
+      h += '<div class="end">' + esc(a.end) + '</div>';
+      f.innerHTML = h; vp.appendChild(f); document.body.appendChild(vp);
+      return { vp: vp, f: f, n: Math.max(1, Math.round((f.scrollWidth + GAP) / (W + GAP))) };
+    }
+    var laid = [], k = N - 1, hit = null;
+    for (var i = 0; i < D.articles.length; i++) {
+      var L = make(D.articles[i]); laid.push(L);
+      if (!hit && k < L.n) { hit = { L: L, a: D.articles[i], p: k }; }
+      else if (!hit) { k -= L.n; }
+    }
+    for (var j = 0; j < laid.length; j++) { if (!hit || laid[j] !== hit.L) laid[j].vp.parentNode.removeChild(laid[j].vp); }
+    var st = document.getElementById('static');
+    if (hit) {
+      hit.L.f.style.left = (-hit.p * (W + GAP)) + 'px';
+      hit.L.vp.style.visibility = 'visible';
+      document.getElementById('tl').textContent = hit.a.topic;
+      document.getElementById('tr').textContent = (hit.p + 1) + '/' + hit.L.n;
+      st.style.display = 'none';
+    } else {
+      document.getElementById('tl').textContent = 'Sticky Reader';
+      document.getElementById('tr').textContent = '';
+      st.innerHTML = '<div class="empty"><h1>' + (D.articles.length ? "That's all for today" : 'No new articles today') +
+        '</h1><p>New articles arrive tomorrow morning.</p></div>';
+    }
+  } catch (e) { /* keep the server-side layout */ }
+})();
+</script>"""
+
+
+def end_note(art):
+    m = re.search(r"(\d{4,})/?$", art["link"])
+    ident = m.group(1) if m else art["link"].rstrip("/").split("/")[-1][-20:]
+    what = "Continues online" if art["truncated"] else "End of article"
+    return f"{what} · republished from {art['source']} (CC BY-ND) · ref {ident}"
+
+
+def is_heading(p):
+    return len(p) < 70 and not re.search(r"[.!?:;,”\"…)]$", p)
+
+
+def page_data(articles, total, built):
+    arts = []
+    for a in articles:
+        paras = [p for pg in a["pages"] for p in pg["paras"]]
+        arts.append({"topic": a["topic"], "title": a["title"], "byline": a["byline"],
+                     "paras": [[1 if is_heading(p) else 0, p] for p in paras], "end": end_note(a)})
+    # </script> can't appear inside the inline JSON
+    return json.dumps({"articles": arts}, ensure_ascii=False).replace("</", "<\\/")
 
 
 def article_page_body(art, i):
@@ -375,14 +468,9 @@ def article_page_body(art, i):
         out.append(f"<h1>{esc(art['title'])}</h1>")
         out.append(f'<div class="by">{esc(art["byline"])}</div>')
     for p in art["pages"][i]["paras"]:
-        is_head = len(p) < 70 and not re.search(r"[.!?:;,\u201d\"\u2026)]$", p)
-        out.append(f"<h2>{esc(p)}</h2>" if is_head else f"<p>{esc(p)}</p>")
+        out.append(f"<h2>{esc(p)}</h2>" if is_heading(p) else f"<p>{esc(p)}</p>")
     if i == len(art["pages"]) - 1:
-        m = re.search(r"(\d{4,})/?$", art["link"])
-        ident = m.group(1) if m else art["link"].rstrip("/").split("/")[-1][-20:]
-        what = "Continues online" if art["truncated"] else "End of article"
-        out.append(f'<div class="end">{what} · republished from {esc(art["source"])} '
-                   f'(CC BY-ND) · ref {esc(ident)}</div>')
+        out.append(f'<div class="end">{esc(end_note(art))}</div>')
     return "".join(out)
 
 
@@ -407,8 +495,8 @@ def render_index(pages_meta, built):
 def main() -> int:
     cfg = load_config()
     global FONT_SIZE, DARK
-    FONT_SIZE = int(cfg.get("font_size", 21))
-    DARK = str(cfg.get("theme", "light")).lower() == "dark"
+    FONT_SIZE = int(cfg.get("font_size", 27))
+    DARK = bool(cfg.get("dark_mode", False)) or str(cfg.get("theme", "")).lower() == "dark"
     # Fit estimates scale with the font: ~720px of body height, 1.36 line height,
     # and ~53 chars per line at 19px (measured). Override in config if needed.
     cfg.setdefault("lines_per_page", int(720 / (FONT_SIZE * 1.36)) - 1)
@@ -423,6 +511,7 @@ def main() -> int:
     (DOCS / ".nojekyll").write_text("")
 
     articles = plan(cfg["topics"], cfg, shown)
+    data_json = page_data(articles, total, built)
     pages_meta, n = [], 0
     for art_no, art in enumerate(articles, 1):
         shown.add(art["link"])
@@ -432,7 +521,7 @@ def main() -> int:
             right = f"{i + 1}/{len(art['pages'])}"
             body = article_page_body(art, i)
             (DOCS / f"p{n:02d}.html").write_text(
-                page_html(art["topic"], right, body, n, total, built), encoding="utf-8")
+                page_html(art["topic"], right, body, n, total, built, data_json), encoding="utf-8")
             label = f"{art['topic']} {right}" + (f": {art['title']}" if i == 0 else "")
             pages_meta.append({"file": f"p{n:02d}.html", "label": label})
 
@@ -446,7 +535,7 @@ def main() -> int:
             msg = ("<div class=\"empty\"><h1>No new articles today</h1>"
                    "<p>Check back tomorrow.</p></div>")
         (DOCS / f"p{n:02d}.html").write_text(
-            page_html("Sticky Reader", "", msg, n, total, built), encoding="utf-8")
+            page_html("Sticky Reader", "", msg, n, total, built, data_json), encoding="utf-8")
         pages_meta.append({"file": f"p{n:02d}.html", "label": "(empty)"})
 
     for old in DOCS.glob("p*.html"):  # remove pages beyond the pool size
